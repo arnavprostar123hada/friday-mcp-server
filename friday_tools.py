@@ -158,6 +158,135 @@ def cancel_alarm(alarm_id: str, device_id: str = DEFAULT_DEVICE_ID) -> dict:
         return {"success": False, "message": "No matching active alarm was found. It may already be cancelled."}
     return {"success": True, "message": "Alarm cancelled.", "alarm": rows[0]}
 
+def _supabase_storage_request(method: str, path: str, *, payload=None):
+    """Call Supabase Storage using the server-only secret key."""
+    base_url = os.environ.get("SUPABASE_URL", "").rstrip("/")
+    secret_key = os.environ.get("SUPABASE_SECRET_KEY", "")
+
+    if not base_url or not secret_key:
+        raise RuntimeError("Supabase Storage is not configured.")
+
+    headers = {
+        "apikey": secret_key,
+        "Authorization": f"Bearer {secret_key}",
+        "Accept": "application/json",
+    }
+
+    body = None
+    if payload is not None:
+        headers["Content-Type"] = "application/json"
+        body = json.dumps(payload).encode("utf-8")
+
+    request = Request(
+        f"{base_url}/storage/v1/{path}",
+        data=body,
+        headers=headers,
+        method=method,
+    )
+
+    try:
+        with urlopen(request, timeout=20) as response:
+            raw = response.read().decode("utf-8")
+            return json.loads(raw) if raw else {}
+    except HTTPError as exc:
+        detail = exc.read().decode("utf-8", errors="replace")[:400]
+        raise RuntimeError(
+            f"Music storage request failed (HTTP {exc.code}): {detail}"
+        ) from None
+    except (URLError, TimeoutError) as exc:
+        raise RuntimeError(f"Could not reach music storage: {exc}") from None
+
+
+@mcp.tool()
+def list_music(prefix: str = "") -> dict:
+    """List MP3 songs in FRIDAY's private music library."""
+    prefix = prefix.strip().lstrip("/")
+
+    if len(prefix) > 300 or ".." in prefix.split("/"):
+        return {"success": False, "error": "Invalid folder prefix."}
+
+    result = _supabase_storage_request(
+        "POST",
+        "object/list/friday-music",
+        payload={
+            "prefix": prefix,
+            "limit": 100,
+            "offset": 0,
+            "sortBy": {"column": "name", "order": "asc"},
+        },
+    )
+
+    songs = []
+    for item in result if isinstance(result, list) else []:
+        name = item.get("name", "")
+        if name.lower().endswith(".mp3"):
+            songs.append({
+                "name": name,
+                "metadata": item.get("metadata") or {},
+            })
+
+    return {
+        "success": True,
+        "count": len(songs),
+        "songs": songs,
+    }
+
+
+@mcp.tool()
+def play_music(song_name: str, expires_in: int = 3600) -> dict:
+    """Create a temporary secure streaming URL for a library MP3."""
+    from urllib.parse import quote
+
+    song_name = song_name.strip().lstrip("/")
+
+    if (
+        not song_name
+        or len(song_name) > 500
+        or ".." in song_name.split("/")
+        or not song_name.lower().endswith(".mp3")
+    ):
+        return {
+            "success": False,
+            "error": "Provide the exact MP3 filename from list_music.",
+        }
+
+    if not 60 <= expires_in <= 3600:
+        return {
+            "success": False,
+            "error": "URL expiry must be between 60 and 3600 seconds.",
+        }
+
+    object_path = "/".join(
+        quote(part, safe="") for part in song_name.split("/")
+    )
+
+    result = _supabase_storage_request(
+        "POST",
+        f"object/sign/friday-music/{object_path}",
+        payload={"expiresIn": expires_in},
+    )
+
+    signed_url = result.get("signedURL") or result.get("signedUrl")
+
+    if not signed_url:
+        return {
+            "success": False,
+            "error": "Storage did not return a signed music URL.",
+        }
+
+    if signed_url.startswith("/"):
+        signed_url = (
+            os.environ["SUPABASE_URL"].rstrip("/") + signed_url
+        )
+
+    return {
+        "success": True,
+        "song": song_name.rsplit("/", 1)[-1],
+        "stream_url": signed_url,
+        "expires_in": expires_in,
+        "message": "Temporary music stream URL created.",
+    }
+
 
 if __name__ == "__main__":
     mcp.run(transport="stdio")
