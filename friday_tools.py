@@ -233,7 +233,7 @@ def list_music(prefix: str = "") -> dict:
 
 
 @mcp.tool()
-def play_music(song_name: str, expires_in: int = 3600) -> dict:
+def play_cloud_music(song_name: str, expires_in: int = 3600) -> dict:
     """Create a temporary secure streaming URL for a library MP3."""
     from urllib.parse import quote
 
