@@ -51,7 +51,7 @@ def _supabase_request(method: str, path: str, *, params=None, payload=None, pref
 
 
 @mcp.tool()
-def get_current_time() -> dict:
+def get_now_current_time() -> dict:
     """Get the current date and time in India."""
     now = datetime.now(ZoneInfo("Asia/Kolkata"))
     return {
